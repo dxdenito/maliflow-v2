@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Banknote, ChevronRight, Loader2, Plus } from 'lucide-react'
 import IncomeDetailModal from '../components/IncomeDetailModal'
+import IncomeEditModal from '../components/IncomeEditModal'
 import IncomeModal from '../components/IncomeModal'
 import MonthSwitcher from '../components/MonthSwitcher'
 import ReceiveModal from '../components/ReceiveModal'
@@ -16,45 +17,84 @@ import {
 } from '../lib/format'
 import { fetchIncome, fetchIncomeSummary } from '../lib/income'
 
-function IncomeRow({ item, accountName, onClick }) {
+function IncomeRow({ item, accountNames, onClick }) {
   const type = incomeTypeMap[item.income_type] ?? incomeTypeMap.other
-  const isPending = item.status === 'expected'
-  const isLate = isPending && item.expected_on < todayISO()
+  const pending = item.status !== 'received'
+  const partial = item.status === 'partial'
+  const isLate = pending && item.expected_on < todayISO()
+  const last = item.receipts[0]
+  const expected = Number(item.expected_amount)
+  const received = Number(item.received_total)
+  const progress = expected > 0 ? Math.min(100, (received / expected) * 100) : 0
+
+  const late = isLate && <span className="font-medium text-warn"> · late</span>
+
+  let subtitle
+  if (item.status === 'expected') {
+    subtitle = (
+      <>
+        Expected {formatDate(item.expected_on)}
+        {late}
+      </>
+    )
+  } else if (partial) {
+    subtitle = (
+      <>
+        {formatMoney(item.remaining)} still to come
+        {late}
+      </>
+    )
+  } else {
+    subtitle = (
+      <>
+        Received {formatDate(last.received_on)} ·{' '}
+        {item.receipts.length > 1
+          ? `${item.receipts.length} payments`
+          : (accountNames[last.account_id] ?? 'an account')}
+      </>
+    )
+  }
 
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-4 rounded-2xl border border-line bg-surface p-4 text-left transition hover:border-brand/50 active:scale-[0.99]"
+      className="w-full rounded-2xl border border-line bg-surface p-4 text-left transition hover:border-brand/50 active:scale-[0.99]"
     >
-      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand">
-        <type.icon size={20} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-semibold">{item.source}</span>
-        <span className="block text-sm text-muted">
-          {isPending ? (
-            <>
-              Expected {formatDate(item.expected_on)}
-              {isLate && <span className="font-medium text-warn"> · late</span>}
-            </>
+      <div className="flex items-center gap-4">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand">
+          <type.icon size={20} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-semibold">{item.source}</span>
+          <span className="block text-sm text-muted">{subtitle}</span>
+        </span>
+        <span className="text-right">
+          {item.status === 'expected' ? (
+            <span className="block font-bold text-muted">
+              {formatMoney(expected)}
+            </span>
           ) : (
             <>
-              Received {formatDate(item.received_on)} · {accountName}
+              <span className="block font-bold text-brand">
+                +{formatMoney(received)}
+              </span>
+              {partial && (
+                <span className="block text-xs text-muted">
+                  of {formatMoney(expected)}
+                </span>
+              )}
             </>
           )}
         </span>
-      </span>
-      {isPending ? (
-        <>
-          <span className="font-bold text-muted">
-            {formatMoney(item.expected_amount)}
-          </span>
-          <ChevronRight size={16} className="text-muted" />
-        </>
-      ) : (
-        <span className="font-bold text-brand">
-          +{formatMoney(item.received_amount)}
-        </span>
+        <ChevronRight size={16} className="shrink-0 text-muted" />
+      </div>
+      {partial && (
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-app">
+          <div
+            className="h-full rounded-full bg-brand"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
       )}
     </button>
   )
@@ -75,7 +115,7 @@ function IncomeGroup({ title, items, accountNames, onSelect }) {
           <IncomeRow
             key={item.id}
             item={item}
-            accountName={accountNames[item.account_id] ?? 'an account'}
+            accountNames={accountNames}
             onClick={() => onSelect(item)}
           />
         ))}
@@ -102,7 +142,7 @@ function Income() {
         const [incomeList, incomeSummary, accountList] = await Promise.all([
           fetchIncome(month),
           fetchIncomeSummary(month),
-          fetchAccounts(),
+          fetchAccounts(true),
         ])
         if (ignore) return
         setItems(incomeList)
@@ -127,9 +167,13 @@ function Income() {
     setMonth((current) => shiftMonth(current, delta))
   }
 
-  function handleSaved() {
-    setModal(null)
+  function reload() {
     setVersion((current) => current + 1)
+  }
+
+  function handleSaved(id) {
+    setModal(id ? { type: 'detail', id } : null)
+    reload()
   }
 
   const closeModal = useCallback(() => setModal(null), [])
@@ -137,13 +181,18 @@ function Income() {
   const accountNames = Object.fromEntries(
     accounts.map((account) => [account.id, account.name]),
   )
-  const pending = items.filter((item) => item.status === 'expected')
+  const selected = modal?.id ? items.find((item) => item.id === modal.id) : null
+  const pending = items.filter((item) => item.status !== 'received')
   const received = items.filter((item) => item.status === 'received')
 
   const expectedTotal = Number(summary?.expected_total ?? 0)
   const receivedTotal = Number(summary?.received_total ?? 0)
   const progress =
     expectedTotal > 0 ? Math.min(100, (receivedTotal / expectedTotal) * 100) : 0
+
+  function backToDetail() {
+    setModal({ type: 'detail', id: selected.id })
+  }
 
   return (
     <div>
@@ -153,7 +202,7 @@ function Income() {
           <p className="mt-1 text-muted">What comes in, and when</p>
         </div>
         <button
-          onClick={() => setModal('new')}
+          onClick={() => setModal({ type: 'new' })}
           className="flex shrink-0 items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-on-brand transition hover:brightness-110 active:scale-95"
         >
           <Plus size={16} /> Add
@@ -215,7 +264,7 @@ function Income() {
             received.
           </p>
           <button
-            onClick={() => setModal('new')}
+            onClick={() => setModal({ type: 'new' })}
             className="mt-5 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition hover:brightness-110"
           >
             Add income
@@ -229,40 +278,51 @@ function Income() {
             title="Waiting to arrive"
             items={pending}
             accountNames={accountNames}
-            onSelect={setModal}
+            onSelect={(item) => setModal({ type: 'detail', id: item.id })}
           />
           <IncomeGroup
             title="Received"
             items={received}
             accountNames={accountNames}
-            onSelect={setModal}
+            onSelect={(item) => setModal({ type: 'detail', id: item.id })}
           />
         </>
       )}
 
-      {modal === 'new' && (
+      {modal?.type === 'new' && (
         <IncomeModal
-          accounts={accounts}
+          accounts={accounts.filter((account) => account.is_active)}
           onClose={closeModal}
-          onSaved={handleSaved}
+          onSaved={() => handleSaved(null)}
         />
       )}
 
-      {modal && modal !== 'new' && modal.status === 'expected' && (
+      {modal?.type === 'receive' && selected && (
         <ReceiveModal
-          income={modal}
+          income={selected}
           accounts={accounts}
-          onClose={closeModal}
-          onSaved={handleSaved}
+          onClose={backToDetail}
+          onSaved={() => handleSaved(selected.id)}
         />
       )}
 
-      {modal && modal !== 'new' && modal.status === 'received' && (
+      {modal?.type === 'edit' && selected && (
+        <IncomeEditModal
+          income={selected}
+          onClose={backToDetail}
+          onSaved={() => handleSaved(selected.id)}
+          onDeleted={() => handleSaved(null)}
+        />
+      )}
+
+      {modal?.type === 'detail' && selected && (
         <IncomeDetailModal
-          income={modal}
-          accountName={accountNames[modal.account_id] ?? 'an account'}
+          income={selected}
+          accountNames={accountNames}
+          onReceive={() => setModal({ type: 'receive', id: selected.id })}
+          onEdit={() => setModal({ type: 'edit', id: selected.id })}
+          onChanged={reload}
           onClose={closeModal}
-          onSaved={handleSaved}
         />
       )}
     </div>

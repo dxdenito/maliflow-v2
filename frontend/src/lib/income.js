@@ -15,9 +15,18 @@ export async function createIncome(payload) {
   return data
 }
 
-export async function receiveIncome(incomeId, payload) {
-  const { data } = await api.post(`/income/${incomeId}/receive`, payload)
+export async function updateIncome(incomeId, payload) {
+  const { data } = await api.patch(`/income/${incomeId}`, payload)
   return data
+}
+
+export async function receiveIncome(incomeId, payload) {
+  const { data } = await api.post(`/income/${incomeId}/receipts`, payload)
+  return data
+}
+
+export async function deleteReceipt(receiptId) {
+  await api.delete(`/income/receipts/${receiptId}`)
 }
 
 export async function deleteIncome(incomeId) {

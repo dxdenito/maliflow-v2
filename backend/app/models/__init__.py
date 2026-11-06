@@ -2,7 +2,7 @@ from app.models.account import Account
 from app.models.budget import Budget, BudgetItem
 from app.models.category import Category
 from app.models.expense import Expense
-from app.models.income import Income
+from app.models.income import Income, IncomeReceipt
 from app.models.investment import Investment, InvestmentEvent
 from app.models.ledger_entry import LedgerEntry
 from app.models.obligation import Obligation, ObligationPayment
@@ -16,6 +16,7 @@ __all__ = [
     "Category",
     "Expense",
     "Income",
+    "IncomeReceipt",
     "Investment",
     "InvestmentEvent",
     "LedgerEntry",

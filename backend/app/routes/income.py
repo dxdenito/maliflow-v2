@@ -5,21 +5,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.dates import MONTH_PATTERN, parse_month
 from app.core.deps import get_current_user
 from app.models.user import User
-from app.schemas.income import IncomeCreate, IncomeRead, IncomeReceive, IncomeSummary
+from app.schemas.income import (
+    IncomeCreate,
+    IncomeRead,
+    IncomeSummary,
+    IncomeUpdate,
+    ReceiptCreate,
+)
 from app.services import income_service
 
 router = APIRouter(prefix="/income", tags=["income"])
-
-MONTH_PATTERN = r"^(19|20)\d{2}-(0[1-9]|1[0-2])$"
-
-
-def parse_month(month: str | None) -> date | None:
-    if month is None:
-        return None
-    year, month_number = month.split("-")
-    return date(int(year), int(month_number), 1)
 
 
 def account_error() -> HTTPException:
@@ -34,6 +32,13 @@ def not_found_error() -> HTTPException:
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Income not found",
     )
+
+
+def conflict(message: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+
+
+NOT_ENOUGH = "Deleting this would take the account below zero, because the money has already been spent or moved"
 
 
 @router.get("", response_model=list[IncomeRead])
@@ -72,24 +77,62 @@ def create_income(
         raise account_error()
 
 
-@router.post("/{income_id}/receive", response_model=IncomeRead)
-def receive_income(
+@router.patch("/{income_id}", response_model=IncomeRead)
+def update_income(
     income_id: uuid.UUID,
-    data: IncomeReceive,
+    data: IncomeUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     try:
-        return income_service.receive_income(db, current_user.id, income_id, data)
+        return income_service.update_income(db, current_user.id, income_id, data)
+    except income_service.IncomeNotFoundError:
+        raise not_found_error()
+    except income_service.NothingReceivedError:
+        raise conflict(
+            "Nothing has been received yet, so there is nothing to close out. Delete this income instead."
+        )
+
+
+@router.post(
+    "/{income_id}/receipts",
+    response_model=IncomeRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_receipt(
+    income_id: uuid.UUID,
+    data: ReceiptCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return income_service.add_receipt(db, current_user.id, income_id, data)
     except income_service.IncomeNotFoundError:
         raise not_found_error()
     except income_service.IncomeAlreadyReceivedError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This income has already been received",
+        raise conflict(
+            "This income is already fully received. Edit the expected amount if you were paid more."
         )
     except income_service.InvalidAccountError:
         raise account_error()
+
+
+@router.delete("/receipts/{receipt_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_receipt(
+    receipt_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        income_service.delete_receipt(db, current_user.id, receipt_id)
+    except income_service.ReceiptNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment not found",
+        )
+    except income_service.InsufficientBalanceError:
+        raise conflict(NOT_ENOUGH)
+
 
 @router.delete("/{income_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_income(
@@ -102,7 +145,4 @@ def delete_income(
     except income_service.IncomeNotFoundError:
         raise not_found_error()
     except income_service.InsufficientBalanceError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Deleting this would take the account below zero, because the money has already been spent or moved",
-        )
+        raise conflict(NOT_ENOUGH)
